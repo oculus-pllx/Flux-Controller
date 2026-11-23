@@ -39,3 +39,6 @@ was required. Existing legacy PVE3/PVE5 flags remain subject to ownership review
 
 Private receipts/logs are under `/tmp/flux-ha-recovery-20261123/` on the workstation.
 See `docs/ops/2026-11-23-ha-maintenance-recovery.md` for rollout order and diagnostics.
+
+Published source revision: `ab97b2f7dd43c7aa33ecfe1edafa9fe8e56bf889`; GitHub main matched local HEAD after push.
+No live controller or agent deployment was performed.

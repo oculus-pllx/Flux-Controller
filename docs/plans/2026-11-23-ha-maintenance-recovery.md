@@ -58,11 +58,11 @@ Files: create `backend/models/HaRecovery.js`, `services/haRecoveryService.js`, a
 - [x] Self-review failure/ownership/race paths using requesting-code-review.
 - [x] Append `DECISIONS.md`, document upgrade order and unknown legacy flags, and
   record exact test results. Keep all live credentials and state out of commits.
-- [ ] Commit public source. Copy only reviewed shared code/tests/docs to private
+- [x] Commit public source. Copy only reviewed shared code/tests/docs to private
   Flux; preserve its separate PRISM deployment files and private documentation.
-- [ ] Verify both suites in the private checkout and compare changed shared files
+- [x] Verify both suites in the private checkout and compare changed shared files
   byte-for-byte. Commit private source with public revision traceability.
-- [ ] Push both main branches without force. Do not create or publish a release or
+- [x] Push both main branches without force. Do not create or publish a release or
   deploy to PRISM merely because the repository fix is complete. Record any
   automatically started CI once; leave it unattended.
 - [x] Report pushed revisions and any remaining live rollout limitation. Existing
