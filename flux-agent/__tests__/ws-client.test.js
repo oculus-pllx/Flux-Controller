@@ -15,6 +15,8 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  require('../services/ws-client').disconnect()
+  for (const socket of wss.clients) socket.terminate()
   jest.resetModules()
   wss.close()
   await new Promise(r => server.close(r))
@@ -26,6 +28,7 @@ describe('ws-client', () => {
     await client.connect({
       fluxUrl: `ws://localhost:${port}/api/agent`,
       machineKey: 'test-key',
+      maintenanceRecovery: () => ({ phase: 'owned', shutdownId: 'outage-1' }),
       hostname: 'test-host',
       role: 'controlled',
       virtualization: 'none',
@@ -34,7 +37,7 @@ describe('ws-client', () => {
       capabilities: [],
     })
     await new Promise(r => setTimeout(r, 100))
-    expect(receivedMessages.some(m => m.type === 'register')).toBe(true)
+    expect(receivedMessages.find(m => m.type === 'register')).toMatchObject({ maintenanceRecovery: { phase: 'owned', shutdownId: 'outage-1' } })
     client.disconnect()
   })
 

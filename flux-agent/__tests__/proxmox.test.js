@@ -1,9 +1,9 @@
 jest.mock('https')
 jest.mock('http')
-jest.mock('child_process', () => ({ exec: jest.fn() }))
+jest.mock('child_process', () => ({ exec: jest.fn(), execFile: jest.fn() }))
 const https = require('https')
 const http = require('http')
-const { exec } = require('child_process')
+const { exec, execFile } = require('child_process')
 
 function mockRes(statusCode, data) {
   return {
@@ -49,6 +49,7 @@ describe('flux-agent proxmox service', () => {
 	  beforeEach(() => {
 	    jest.clearAllMocks()
 	    exec.mockImplementation((cmd, cb) => cb(null, '', ''))
+      execFile.mockImplementation((file, args, options, cb) => cb(null, '', ''))
 	  })
 
   it('listVMs calls GET /nodes/{node}/qemu and returns array', async () => {
@@ -124,16 +125,16 @@ describe('flux-agent proxmox service', () => {
 
 	  it('enableNodeMaintenance runs ha-manager for the configured node', async () => {
 	    await enableNodeMaintenance(PVE)
-	    expect(exec).toHaveBeenCalledWith(
-	      'ha-manager crm-command node-maintenance enable pve',
+	    expect(execFile).toHaveBeenCalledWith(
+          'ha-manager', ['crm-command', 'node-maintenance', 'enable', 'pve'], { timeout: 10000 },
 	      expect.any(Function),
 	    )
 	  })
 
 	  it('disableNodeMaintenance runs ha-manager for the configured node', async () => {
 	    await disableNodeMaintenance(PVE)
-	    expect(exec).toHaveBeenCalledWith(
-	      'ha-manager crm-command node-maintenance disable pve',
+	    expect(execFile).toHaveBeenCalledWith(
+          'ha-manager', ['crm-command', 'node-maintenance', 'disable', 'pve'], { timeout: 10000 },
 	      expect.any(Function),
 	    )
 	  })

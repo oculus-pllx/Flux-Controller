@@ -6,6 +6,7 @@ jest.mock('../services/proxmoxService', () => ({
   waitHaFrozen: jest.fn().mockResolvedValue(true),
   getClusterOptions: jest.fn().mockResolvedValue({ ha: 'shutdown_policy=conditional' }),
   restoreHaPolicy: jest.fn().mockResolvedValue(),
+  clusterQuorate: jest.fn().mockResolvedValue(true),
 }))
 
 const http = require('http')
@@ -14,6 +15,8 @@ const { sequelize } = require('../config/database')
 const AgentMachine = require('../models/AgentMachine')
 require('../models/AgentMachineEvent') // ensure table is created on sync
 const PowerEvent = require('../models/PowerEvent')
+const Device = require('../models/Device')
+const HaRecovery = require('../models/HaRecovery')
 const proxmoxService = require('../services/proxmoxService')
 
 let server, hub, port
@@ -37,6 +40,8 @@ afterEach(async () => {
   proxmoxService.freezeHa.mockClear()
   proxmoxService.getClusterOptions.mockClear()
   proxmoxService.restoreHaPolicy.mockClear()
+  await HaRecovery.destroy({ where: {}, truncate: true })
+  await Device.destroy({ where: {}, truncate: true })
   await PowerEvent.destroy({ where: {}, truncate: true })
   await AgentMachine.destroy({ where: {}, truncate: true })
 })
@@ -53,7 +58,7 @@ async function registerAgent(ws, machineKey) {
   ws.send(JSON.stringify({
     type: 'register', machineKey, hostname: machineKey,
     role: 'pve-node', virtualization: 'none', os: 'Debian 12',
-    agentVersion: '1.0.0', capabilities: [],
+    agentVersion: '1.1.0', capabilities: ['ha-maintenance-recovery-v1'],
   }))
   await new Promise((r) => setTimeout(r, 80))
 }
@@ -199,6 +204,7 @@ describe('notifyShutdown — cluster-aware', () => {
 
 	  it('sends cancel-shutdown and restores HA policy when power returns', async () => {
 	    const pveConfig = { url: 'https://192.168.0.10:8006', tokenId: 'flux@pam!t', tokenSecret: 's', node: 'pve' }
+        await Device.create({ id: 77, name: 'Recovery UPS', host: 'localhost', lastSeen: new Date(), lastStatus: { 'ups.status': 'OL' } })
 	    await AgentMachine.create({
 	      machineKey: 'recover-pve', hostname: 'recover-pve', role: 'pve-node',
 	      clusterId: 'recover-cluster', clusterVotes: 1, upsGroupId: 77,
@@ -219,6 +225,7 @@ describe('notifyShutdown — cluster-aware', () => {
 	      total: 1,
 	      shutdownId: (await PowerEvent.findOne({ where: { deviceId: 77, state: 'active' } })).shutdownId,
 	      deviceId: 77,
+          maintenanceRecovery: { phase: 'owned', node: 'pve', deviceId: 77, shutdownId: (await PowerEvent.findOne({ where: { deviceId: 77, state: 'active' } })).shutdownId },
 	    }))
 	    await new Promise((r) => setTimeout(r, 100))
 	    await hub.notifyPowerRestored(77)

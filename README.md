@@ -362,3 +362,10 @@ cd frontend && npm run build
 ## License
 
 MIT — Parallax Group
+
+## UPS power-restoration recovery
+
+Flux-owned Proxmox maintenance is recovered through durable, acknowledged work
+when power is positively online and agents reconnect. Agent1.1.0 preserves manual
+maintenance and rejects unowned or ambiguous clears. Upgrade the controller before
+its agents; older outage flags require review. See the [recovery operations guide](docs/ops/2026-11-23-ha-maintenance-recovery.md).

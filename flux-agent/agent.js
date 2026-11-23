@@ -49,25 +49,13 @@ async function handleMessage(msg) {
 
     case 'disable-ha-maintenance': {
       const currentCfg = enrollment.getConfig()
-      if (currentCfg.pveConfig) {
-        const proxmox = require('./services/proxmox')
-        try {
-          await proxmox.disableNodeMaintenance(currentCfg.pveConfig)
-          wsClient.send({
-            type: 'ha-maintenance-disabled',
-            machineKey: currentCfg.machineKey,
-            shutdownId: msg.shutdownId,
-            deviceId: msg.deviceId,
-          })
-        } catch (err) {
-          wsClient.send({
-            type: 'ha-maintenance-disable-error',
-            machineKey: currentCfg.machineKey,
-            shutdownId: msg.shutdownId,
-            deviceId: msg.deviceId,
-            error: err.message,
-          })
-        }
+      const response = { machineKey: currentCfg.machineKey, shutdownId: msg.shutdownId,
+        deviceId: msg.deviceId, node: msg.node, requestId: msg.requestId }
+      try {
+        const state = await require('./services/ha-maintenance').recover({ cfg: currentCfg, message: msg })
+        wsClient.send({ ...response, type: 'ha-maintenance-disabled', phase: state.phase })
+      } catch {
+        wsClient.send({ ...response, type: 'ha-maintenance-disable-error', code: 'recovery-not-verified' })
       }
       break
     }
@@ -225,7 +213,8 @@ async function main() {
     virtualization,
     os,
     agentVersion: AGENT_VERSION,
-    capabilities: [],
+    capabilities: ['ha-maintenance-recovery-v1'],
+    maintenanceRecovery: () => require('./services/ha-maintenance').report({ cfg: enrollment.getConfig() }),
     onMessage: handleMessage,
   }
 
@@ -283,4 +272,5 @@ async function main() {
   process.on('SIGINT',  () => { wsClient.disconnect(); process.exit(0) })
 }
 
-main().catch(err => { console.error('[agent] Fatal:', err.message); process.exit(1) })
+if (require.main === module) main().catch(err => { console.error('[agent] Fatal:', err.message); process.exit(1) })
+module.exports = { main, handleMessage }

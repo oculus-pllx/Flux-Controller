@@ -9,6 +9,7 @@ jest.mock('../services/alertService', () => ({
 jest.mock('../services/agentHub', () => ({
   notifyShutdown: jest.fn(),
   notifyPowerRestored: jest.fn(),
+  reconcilePowerRecovery: jest.fn(),
 }))
 
 const { sequelize } = require('../config/database')
@@ -21,6 +22,32 @@ afterAll(async () => { await sequelize.close() })
 beforeEach(() => jest.clearAllMocks())
 
 describe('pollingService', () => {
+  it('clears a stale polling error after the NUT source recovers', async () => {
+    const device = await Device.create({
+      name: 'Recovered UPS',
+      host: '192.0.2.55',
+      port: 3493,
+      upsName: 'prism-ups',
+      lastSeen: null,
+      lastStatus: {},
+      nutHealth: {
+        state: 'error',
+        sourceType: 'unknown',
+        message: 'NUT polling failed: connect ECONNREFUSED 192.0.2.55:3493',
+      },
+    })
+    nutService.pollDevice.mockResolvedValue({ 'ups.status': 'OL CHRG' })
+
+    const { pollDeviceForTest } = require('../services/pollingService')
+    await pollDeviceForTest(device)
+
+    await device.reload()
+    expect(device.lastStatus).toEqual({ 'ups.status': 'OL CHRG' })
+    expect(device.lastSeen).not.toBeNull()
+    expect(device.nutHealth).toBeNull()
+  })
+
+
   it('marks a device offline when polling fails so stale online data is not shown', async () => {
     const device = await Device.create({
       name: 'Stale UPS',
@@ -43,5 +70,21 @@ describe('pollingService', () => {
       message: 'NUT polling failed: DRIVER-NOT-CONNECTED',
     })
     expect(device.lastSeen).toBeNull()
+  })
+})
+
+describe('power-restoration safety and durable retry', () => {
+  it.each(['', 'UNKNOWN', 'NOTOL', 'OL OB', 'OL LB', 'OL FSD'])('does not treat %s as restored mains power', async status => {
+    const device = await Device.create({ name: 'Unsafe recovery', host: 'localhost', shutdownActive: true })
+    await require('../services/pollingService').checkAutoShutdownForTest(device, { 'ups.status': status })
+    await device.reload()
+    expect(device.shutdownActive).toBe(true)
+    expect(require('../services/agentHub').notifyPowerRestored).not.toHaveBeenCalled()
+  })
+  it('reconciles prior pending cleanup on subsequent successful OL polls without another power transition', async () => {
+    const device = await Device.create({ name: 'Recovered UPS', host: 'localhost', shutdownActive: false })
+    await require('../services/pollingService').checkAutoShutdownForTest(device, { 'ups.status': 'OL CHRG' })
+    expect(require('../services/agentHub').notifyPowerRestored).toHaveBeenCalledWith(device.id)
+    expect(require('../services/agentHub').reconcilePowerRecovery).toHaveBeenCalledWith(device.id)
   })
 })

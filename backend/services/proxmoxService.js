@@ -43,6 +43,7 @@ function apiRequest(pveConfig, method, path, body = null) {
     })
 
     req.on('error', reject)
+    if (typeof req.setTimeout === 'function') req.setTimeout(10000, () => req.destroy(new Error('Proxmox request timed out')))
     // PVE API v2 accepts Content-Type: application/json for PUT/POST operations
     if (body) req.write(JSON.stringify(body))
     req.end()
@@ -57,15 +58,20 @@ async function freezeHa(pveConfig, policy = 'freeze') {
 }
 
 async function restoreHaPolicy(pveConfig, previousHaPolicy) {
-  if (!previousHaPolicy) return
+  if (previousHaPolicy === undefined) return
   await apiRequest(pveConfig, 'PUT', '/cluster/options', {
-    ha: previousHaPolicy,
+    ...(previousHaPolicy === null ? { delete: 'ha' } : { ha: previousHaPolicy }),
   })
 }
 
 /** Get current cluster options (includes ha.shutdown_policy). */
 async function getClusterOptions(pveConfig) {
   return apiRequest(pveConfig, 'GET', '/cluster/options')
+}
+
+async function clusterQuorate(pveConfig) {
+  const status = await apiRequest(pveConfig, 'GET', '/cluster/status')
+  return Array.isArray(status) && status.some(entry => entry.type === 'cluster' && entry.quorate === 1)
 }
 
 async function listNodes(pveConfig) {
@@ -87,4 +93,4 @@ async function waitHaFrozen(pveConfig, timeoutMs = 30000) {
   throw new Error(`HA freeze confirmation timed out after ${timeoutMs}ms`)
 }
 
-module.exports = { apiRequest, freezeHa, restoreHaPolicy, getClusterOptions, listNodes, waitHaFrozen }
+module.exports = { apiRequest, freezeHa, restoreHaPolicy, getClusterOptions, listNodes, waitHaFrozen, clusterQuorate }

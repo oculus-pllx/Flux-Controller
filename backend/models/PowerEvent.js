@@ -9,6 +9,8 @@ const PowerEvent = sequelize.define('PowerEvent', {
   startedAt:             { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
   resolvedAt:            { type: DataTypes.DATE, allowNull: true },
   previousHaPolicy:      { type: DataTypes.STRING, allowNull: true },
+  shutdownMachineKeys:   { type: DataTypes.JSON, defaultValue: [] },
+  haPolicySnapshots:     { type: DataTypes.JSON, defaultValue: {} },
   haPreparedMachineKeys: { type: DataTypes.JSON, defaultValue: [] },
 })
 

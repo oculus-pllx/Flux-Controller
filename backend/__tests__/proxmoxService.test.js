@@ -85,3 +85,16 @@ describe('proxmoxService', () => {
     })
   })
 })
+
+test('restores a previously absent HA option by deleting the override', async () => {
+  setupMock(200, null)
+  await require('../services/proxmoxService').restoreHaPolicy(PVE_CONFIG, null)
+  const request = https.request.mock.results.at(-1)?.value
+  expect(request?.write).toHaveBeenCalledWith(JSON.stringify({ delete: 'ha' }))
+})
+test('checks quorum explicitly before recovery', async () => {
+  setupMock(200, [{ type: 'cluster', quorate: 1 }])
+  expect(await require('../services/proxmoxService').clusterQuorate(PVE_CONFIG)).toBe(true)
+  setupMock(200, [{ type: 'cluster', quorate: 0 }])
+  expect(await require('../services/proxmoxService').clusterQuorate(PVE_CONFIG)).toBe(false)
+})

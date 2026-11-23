@@ -110,9 +110,11 @@ reconnection and acknowledged recovery without simulating a real power failure.
 No Proxmox guests are relocated or rebooted by this fix; node maintenance is
 cleared only under the verified ownership and recovery contract above.
 
-## Review state
+## Approval
 
-This is the proposed design for owner review. Investigation was read-only; no
-Flux code, database, agent configuration, HA flag, shutdown policy, or service was
-changed. KAG consolidation remains separately pending and `zman-reference` and its
-wiki remain untouched.
+Owner approved this design on2026-11-23 and explicitly requested the source fix in
+both the public and private Parallax repositories. Implementation adds controller
+recovery rows and agent1.1.0 ownership journals, including an ambiguous-clear phase.
+Live SMS PVE3/PVE5 ownership remains unconfirmed and their flags are not cleared by
+repository publication. No PRISM deployment is implied. KAG consolidation and
+zman-reference/wiki remain outside this change.

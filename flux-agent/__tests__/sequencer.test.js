@@ -1,3 +1,4 @@
+jest.mock('../services/ha-maintenance', () => ({ prepare: jest.fn(async ({ cfg, shutdown }) => { await require('../services/proxmox').enableNodeMaintenance(cfg.pveConfig); return { phase: 'owned', node: cfg.pveConfig.node, ...shutdown } }) }))
 jest.mock('../services/shutdown', () => ({ executeShutdown: jest.fn().mockResolvedValue() }))
 jest.mock('../services/proxmox', () => ({
   enableNodeMaintenance: jest.fn().mockResolvedValue(),
@@ -113,6 +114,7 @@ describe('runShutdownSequence', () => {
 	      type: 'shutdown-step',
 	      machineKey: 'mk',
 	      step: 'enabling HA maintenance',
+      maintenanceRecovery: expect.objectContaining({ phase: 'owned', shutdownId: 'sd-ctx' }),
 	      done: 1,
 	      total: 1,
 	      shutdownId: 'sd-ctx',
@@ -134,4 +136,15 @@ describe('runShutdownSequence', () => {
     expect(errors[0].error).toContain('PVE unavailable')
     expect(executeShutdown).toHaveBeenCalledWith(0) // still proceeds
   })
+})
+test('an ownership-verification error does not skip graceful guest shutdown', async () => {
+  jest.clearAllMocks()
+  proxmox.stopAllGuests.mockResolvedValue()
+  require('../services/ha-maintenance').prepare.mockRejectedValueOnce(new Error('confirmation unavailable'))
+  const sent = []
+  await runShutdownSequence({ role: 'pve-node', cfg: { machineKey: 'node', pveConfig: { node: 'pve3' } },
+    shutdown: { shutdownId: 'outage', deviceId: 1 }, send: message => sent.push(message) })
+  expect(proxmox.stopAllGuests).toHaveBeenCalled()
+  expect(executeShutdown).toHaveBeenCalledWith(0)
+  expect(sent).toContainEqual(expect.objectContaining({ type: 'shutdown-step', maintenanceRecovery: expect.objectContaining({ phase: 'unknown' }) }))
 })

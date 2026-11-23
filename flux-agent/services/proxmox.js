@@ -1,6 +1,5 @@
 const https = require('https')
 const http = require('http')
-const { exec } = require('child_process')
 
 /**
  * pveConfig: { url, tokenId, tokenSecret, node }
@@ -39,26 +38,37 @@ function apiRequest(pveConfig, method, path, body = null) {
   })
 }
 
-function runLocal(command) {
+function pveNodeName(pveConfig) {
+  if (!pveConfig || typeof pveConfig.node !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(pveConfig.node)) {
+    throw new Error('Valid pveConfig.node is required')
+  }
+  return pveConfig.node
+}
+
+function runFile(file, args) {
   return new Promise((resolve, reject) => {
-    exec(command, (err, stdout, stderr) => {
-      if (err) reject(new Error(stderr || err.message))
+    require('child_process').execFile(file, args, { timeout: 10000 }, (error, stdout) => {
+      if (error) reject(new Error('Proxmox command failed'))
       else resolve(stdout.trim())
     })
   })
 }
-
-function pveNodeName(pveConfig) {
-  if (!pveConfig || !pveConfig.node) throw new Error('pveConfig.node is required')
-  return String(pveConfig.node).replace(/[^A-Za-z0-9_.-]/g, '')
-}
-
 function enableNodeMaintenance(pveConfig) {
-  return runLocal(`ha-manager crm-command node-maintenance enable ${pveNodeName(pveConfig)}`)
+  return runFile('ha-manager', ['crm-command', 'node-maintenance', 'enable', pveNodeName(pveConfig)])
 }
-
 function disableNodeMaintenance(pveConfig) {
-  return runLocal(`ha-manager crm-command node-maintenance disable ${pveNodeName(pveConfig)}`)
+  return runFile('ha-manager', ['crm-command', 'node-maintenance', 'disable', pveNodeName(pveConfig)])
+}
+async function maintenanceState(pveConfig) {
+  const node = pveNodeName(pveConfig)
+  const manager = JSON.parse(require('fs').readFileSync('/etc/pve/ha/manager_status', 'utf8'))
+  const age = Date.now() - Number(manager.timestamp) * 1000
+  if (!Number.isFinite(age) || age < -5000 || age > 60000 || !manager.node_status?.[node]) {
+    throw new Error('Fresh local HA manager state is unavailable')
+  }
+  const cluster = JSON.parse(await runFile('pvesh', ['get', '/cluster/status', '--output-format', 'json']))
+  const maintenance = manager.node_request?.[node]?.maintenance === 1 || manager.node_status[node] === 'maintenance'
+  return { maintenance, quorate: cluster.some(item => item.type === 'cluster' && item.quorate === 1) }
 }
 
 /** List all QEMU VMs on the configured node. */
@@ -140,3 +150,5 @@ module.exports = {
   enableNodeMaintenance,
   disableNodeMaintenance,
 }
+
+module.exports.maintenanceState = maintenanceState

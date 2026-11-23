@@ -4,6 +4,7 @@ const Metrics = require('../models/Metrics')
 const nutService = require('./nutService')
 const alertService = require('./alertService')
 const agentHub = require('./agentHub')
+const { onlinePower } = require('./haRecoveryService')
 
 const timers = new Map()
 const sseClients = new Set()
@@ -25,7 +26,13 @@ async function pollDevice(device) {
       device.nutUsername, device.nutPassword
     )
     const lastSeen = new Date()
-    await device.update({ lastSeen, lastStatus: data })
+    const recoveredFromPollingFailure = device.nutHealth?.state === 'error'
+      && device.nutHealth?.message?.startsWith('NUT polling failed:')
+    await device.update({
+      lastSeen,
+      lastStatus: data,
+      ...(recoveredFromPollingFailure ? { nutHealth: null } : {}),
+    })
     await Metrics.create({ deviceId: device.id, data })
 
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000)
@@ -100,20 +107,20 @@ async function checkAutoShutdown(device, data) {
     }
   }
 
-  // Power restored — cancel any pending shutdown timers
-  if (!onBattery && (shutdownTriggered.has(device.id) || device.shutdownActive)) {
+  // Positive online power is required; unknown data cannot cancel a shutdown.
+  if (onlinePower(status)) {
     shutdownTriggered.delete(device.id)
     await device.update({ shutdownActive: false })
-	    const handles = pendingShutdowns.get(device.id) || []
-	    handles.forEach(h => clearTimeout(h))
-	    pendingShutdowns.delete(device.id)
-	    try {
-	      await agentHub.notifyPowerRestored(device.id)
-	    } catch (err) {
-	      console.error(`[AutoShutdown] agentHub recovery notify failed: ${err.message}`)
-	    }
-	    console.log(`[AutoShutdown] Device ${device.id} back on line power — cancelled ${handles.length} pending shutdown(s)`)
-	  }
+    const handles = pendingShutdowns.get(device.id) || []
+    handles.forEach(handle => clearTimeout(handle))
+    pendingShutdowns.delete(device.id)
+    try {
+      await agentHub.notifyPowerRestored(device.id)
+      await agentHub.reconcilePowerRecovery(device.id)
+    } catch (err) {
+      console.error(`[AutoShutdown] agentHub recovery notify failed: ${err.message}`)
+    }
+  }
 }
 
 async function startPolling() {

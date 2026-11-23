@@ -36,6 +36,7 @@ function connect(config) {
         clusterId: config.clusterId || null,
         clusterVotes: config.clusterVotes || 1,
         upsGroupId: config.upsGroupId || null,
+        maintenanceRecovery: config.maintenanceRecovery?.() || null,
       }))
 
       heartbeatTimer = setInterval(() => {

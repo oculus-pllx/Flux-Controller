@@ -7,6 +7,8 @@ const Device = require('../models/Device')
 const { buildShutdownScope } = require('./clusterService')
 const proxmoxService = require('./proxmoxService')
 const crypto = require('crypto')
+const { createRecoveryService, freshOnline } = require('./haRecoveryService')
+const recovery = createRecoveryService({ sendToMachine, proxmox: proxmoxService })
 
 // machineKey → WebSocket
 const connections = new Map()
@@ -31,7 +33,7 @@ function attach(httpServer) {
     })
 
     ws.on('close', async () => {
-      if (!machineKey) return
+      if (!machineKey || connections.get(machineKey) !== ws) return
       connections.delete(machineKey)
       try {
         const m = await AgentMachine.findOne({ where: { machineKey } })
@@ -51,6 +53,8 @@ function detach() {
 }
 
 async function handleMessage(ws, msg, setKey) {
+  if (['shutdown-step', 'status', 'pong', 'ping', 'ha-maintenance-disabled', 'ha-maintenance-disable-error'].includes(msg.type)
+    && (!msg.machineKey || connections.get(msg.machineKey) !== ws)) return
   switch (msg.type) {
     case 'enroll':
       await handleEnroll(ws, msg)
@@ -67,6 +71,15 @@ async function handleMessage(ws, msg, setKey) {
     case 'shutdown-error':
       await handleStateUpdate(msg.machineKey, 'error', msg.error)
       break
+    case 'ping':
+      await handlePong(msg.machineKey)
+      break
+    case 'ha-maintenance-disabled':
+    case 'ha-maintenance-disable-error': {
+      const machine = await AgentMachine.findOne({ where: { machineKey: msg.machineKey } })
+      await recovery.acknowledge(machine, msg)
+      break
+    }
     case 'pong':
       await handlePong(msg.machineKey)
       break
@@ -106,7 +119,7 @@ async function handleEnroll(ws, msg) {
 }
 
 async function handleRegister(ws, msg, setKey) {
-  const { machineKey, hostname, role, virtualization, os, agentVersion, capabilities, clusterId, clusterVotes, upsGroupId } = msg
+  const { machineKey, hostname, role, virtualization, os, agentVersion, capabilities, clusterId, clusterVotes } = msg
   if (!machineKey) { ws.close(1008, 'missing machineKey'); return }
 
   const machine = await AgentMachine.findOne({ where: { machineKey } })
@@ -120,14 +133,17 @@ async function handleRegister(ws, msg, setKey) {
   if (shouldAcceptAgentRole(machine, role)) updates.role = role
   // Only update cluster fields if agent reports them; preserve DB values if not sent.
   // upsGroupId is server-authoritative (set via PUT /api/agents/:id) — never overwrite from register.
-  if (clusterId !== undefined) updates.clusterId = clusterId != null ? clusterId : null
-  if (clusterVotes !== undefined) updates.clusterVotes = (clusterVotes != null) ? clusterVotes : 1
+  if (typeof clusterId === 'string' && clusterId.trim()) updates.clusterId = clusterId.trim()
+  if (Number.isInteger(clusterVotes) && clusterVotes > 0) updates.clusterVotes = clusterVotes
 
   await machine.update(updates)
   await setState(machine, 'online')
 
   connections.set(machineKey, ws)
   setKey(machineKey)
+  await recovery.recordOwnership(machine, msg.maintenanceRecovery)
+  await recovery.restorePolicies(machine)
+  await recovery.reconcileMachine(machineKey)
 }
 
 function shouldAcceptAgentRole(machine, role) {
@@ -146,13 +162,9 @@ async function handleStateUpdate(machineKey, newState, detail = null) {
 async function handleShutdownStep(msg) {
   const detail = `${msg.step} — ${msg.done} of ${msg.total}`
   await handleStateUpdate(msg.machineKey, 'shutting-down', detail)
-  if (msg.step === 'enabling HA maintenance' && msg.machineKey && msg.shutdownId) {
-    const event = await PowerEvent.findOne({ where: { shutdownId: msg.shutdownId, state: 'active' } })
-    if (event) {
-      const keys = new Set(event.haPreparedMachineKeys || [])
-      keys.add(msg.machineKey)
-      await event.update({ haPreparedMachineKeys: [...keys] })
-    }
+  if (msg.step === 'enabling HA maintenance') {
+    const machine = await AgentMachine.findOne({ where: { machineKey: msg.machineKey } })
+    await recovery.recordOwnership(machine, msg.maintenanceRecovery)
   }
 }
 
@@ -161,6 +173,7 @@ async function handlePong(machineKey) {
   const machine = await AgentMachine.findOne({ where: { machineKey } })
   if (machine) await machine.update({ lastSeen: new Date() })
   hub.emit(`pong:${machineKey}`)
+  await recovery.reconcileMachine(machineKey)
 }
 
 async function handleStatus(msg) {
@@ -172,6 +185,7 @@ async function handleStatus(msg) {
     const device = await Device.findByPk(machine.upsGroupId)
     if (device) await device.update({ nutHealth: msg.nutHealth })
   }
+  await recovery.reconcileMachine(msg.machineKey)
 }
 
 async function setState(machine, newState, detail = null) {
@@ -238,7 +252,7 @@ async function notifyShutdown(deviceId) {
 
   // signalMap: machineKey → machine (deduplicates machines that might appear in multiple scopes)
   const signalMap = new Map()
-  const haPrepared = new Set(event.haPreparedMachineKeys || [])
+  // Persist the actual shutdown scope; cluster-policy helpers do not own node flags.
 
   for (const clusterId of clusterIds) {
     // Load ALL nodes in the cluster (not just affected ones) for quorum calculation
@@ -257,18 +271,16 @@ async function notifyShutdown(deviceId) {
     const pveNode = allClusterNodes.find(
       (m) => m.role === 'pve-node' && m.pveConfig && connections.has(m.machineKey),
     )
-	    if (pveNode) {
-	      try {
-	        await setState(pveNode, 'ha-freezing')
-	        if (!event.previousHaPolicy) {
-	          const opts = await proxmoxService.getClusterOptions(pveNode.pveConfig)
-	          const ha = opts && opts.ha ? String(opts.ha) : null
-	          if (ha) await event.update({ previousHaPolicy: ha })
-	        }
-	        await proxmoxService.freezeHa(pveNode.pveConfig)
-	        haPrepared.add(pveNode.machineKey)
-	        console.log(`[agentHub] HA frozen for cluster ${clusterId} via ${pveNode.hostname}`)
-	      } catch (err) {
+    if (pveNode) {
+      try {
+        await setState(pveNode, 'ha-freezing')
+        const opts = await proxmoxService.getClusterOptions(pveNode.pveConfig)
+        const ha = opts?.ha == null ? null : String(opts.ha)
+        await recovery.capturePolicy(event, clusterId, ha)
+        if (ha && !event.previousHaPolicy) await event.update({ previousHaPolicy: ha })
+        await proxmoxService.freezeHa(pveNode.pveConfig)
+        console.log(`[agentHub] HA frozen for cluster ${clusterId} via ${pveNode.hostname}`)
+      } catch (err) {
         console.error(`[agentHub] HA freeze failed for cluster ${clusterId}: ${err.message}`)
         // Graceful degradation — proceed with shutdown even if HA freeze fails
       }
@@ -276,79 +288,51 @@ async function notifyShutdown(deviceId) {
       console.warn(`[agentHub] No reachable pve-node with pveConfig in cluster ${clusterId} — skipping HA freeze`)
     }
 
-	    for (const m of scope) signalMap.set(m.machineKey, m)
-	  }
+    for (const m of scope) signalMap.set(m.machineKey, m)
+  }
 
   // Add non-cluster machines (directly affected, no clusterId)
   for (const m of directlyAffected.filter((m) => !m.clusterId)) {
     signalMap.set(m.machineKey, m)
   }
 
-  await event.update({ haPreparedMachineKeys: [...haPrepared] })
+  await event.update({ shutdownMachineKeys: [...signalMap.keys()] })
 
   // Send durable shutdown schedule to all machines simultaneously
   await Promise.all([...signalMap.values()].map(async (m) => {
-	    if (!connections.has(m.machineKey)) return
-	    await setState(m, 'command-sent')
-	    const delaySeconds = m.shutdownDelay || 0
-	    sendToMachine(m.machineKey, {
-	      type: 'schedule-shutdown',
-	      shutdownId: event.shutdownId,
-	      reason: 'ups-critical',
-	      deviceId,
-	      delaySeconds,
-	      executeAt: new Date(Date.now() + delaySeconds * 1000).toISOString(),
-	    })
-	  }))
+    if (!connections.has(m.machineKey)) return
+    await setState(m, 'command-sent')
+    const delaySeconds = m.shutdownDelay || 0
+    sendToMachine(m.machineKey, {
+      type: 'schedule-shutdown',
+      shutdownId: event.shutdownId,
+      reason: 'ups-critical',
+      deviceId,
+      delaySeconds,
+      executeAt: new Date(Date.now() + delaySeconds * 1000).toISOString(),
+    })
+  }))
 }
 
 async function notifyPowerRestored(deviceId) {
+  const device = await Device.findByPk(deviceId)
+  if (!freshOnline(device, Date.now())) return
   const event = await PowerEvent.findOne({ where: { deviceId, state: 'active' } })
   if (!event) return
-
-  const affected = await AgentMachine.findAll({
-    where: { active: true, upsGroupId: deviceId },
-  })
-  const clusterIds = [...new Set(affected.filter((m) => m.clusterId).map((m) => m.clusterId))]
-  const allMachines = new Map(affected.map((m) => [m.machineKey, m]))
-
-  for (const clusterId of clusterIds) {
-    const allClusterNodes = await AgentMachine.findAll({
-      where: { active: true, clusterId },
-    })
-    for (const m of allClusterNodes) allMachines.set(m.machineKey, m)
-
-    const pveNode = allClusterNodes.find(
-      (m) => m.role === 'pve-node' && m.pveConfig && connections.has(m.machineKey),
-    )
-    if (pveNode && event.previousHaPolicy) {
-      try {
-        await proxmoxService.restoreHaPolicy(pveNode.pveConfig, event.previousHaPolicy)
-      } catch (err) {
-        console.error(`[agentHub] HA restore failed for cluster ${clusterId}: ${err.message}`)
-      }
-    }
-  }
-
-  for (const m of allMachines.values()) {
-    if (!connections.has(m.machineKey)) continue
-    sendToMachine(m.machineKey, {
-      type: 'cancel-shutdown',
-      shutdownId: event.shutdownId,
-      deviceId,
-      reason: 'power-restored',
-    })
-    if ((event.haPreparedMachineKeys || []).includes(m.machineKey)) {
-      sendToMachine(m.machineKey, {
-        type: 'disable-ha-maintenance',
-        shutdownId: event.shutdownId,
-        deviceId,
-        reason: 'power-restored',
-      })
-    }
-  }
-
+  // Cancelling a shutdown is separate from durable HA recovery completion.
   await event.update({ state: 'cancelled', resolvedAt: new Date() })
+  let keys = event.shutdownMachineKeys || []
+  if (!keys.length) {
+    // Old events may cancel their schedules but cannot establish node ownership.
+    const affected = await AgentMachine.findAll({ where: { active: true, upsGroupId: deviceId } })
+    keys = affected.map(machine => machine.machineKey)
+  }
+  for (const machineKey of keys) {
+    sendToMachine(machineKey, { type: 'cancel-shutdown', shutdownId: event.shutdownId, deviceId, reason: 'power-restored' })
+    const machine = await AgentMachine.findOne({ where: { machineKey, active: true } })
+    if (machine) await recovery.restorePolicies(machine)
+    await recovery.reconcileMachine(machineKey)
+  }
 }
 
 function getConnectedCount() {
@@ -363,6 +347,7 @@ hub.requestMachine = requestMachine
 hub.notifyShutdown = notifyShutdown
 hub.notifyPowerRestored = notifyPowerRestored
 hub.getConnectedCount = getConnectedCount
+hub.reconcilePowerRecovery = recovery.reconcileDevice
 hub.setState = setState
 
 module.exports = hub

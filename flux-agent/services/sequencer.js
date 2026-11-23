@@ -11,7 +11,7 @@ const { executeShutdown } = require('./shutdown')
 async function runShutdownSequence({ role, cfg, send, shutdown = null }) {
   const { machineKey } = cfg
 
-  function step(s, done, total) {
+  function step(s, done, total, extra = {}) {
     send({
       type: 'shutdown-step',
       machineKey,
@@ -20,6 +20,7 @@ async function runShutdownSequence({ role, cfg, send, shutdown = null }) {
       total,
       ...(shutdown?.shutdownId ? { shutdownId: shutdown.shutdownId } : {}),
       ...(shutdown?.deviceId ? { deviceId: shutdown.deviceId } : {}),
+      ...extra,
     })
   }
 
@@ -27,8 +28,16 @@ async function runShutdownSequence({ role, cfg, send, shutdown = null }) {
     // Proxmox-capable roles stop VMs/CTs before OS shutdown.
     if ((role === 'pve-node' || role === 'ups-host' || role === 'both') && cfg.pveConfig) {
       const proxmox = require('./proxmox')
-      await proxmox.enableNodeMaintenance(cfg.pveConfig)
-      step('enabling HA maintenance', 1, 1)
+      let maintenanceRecovery
+      try {
+        maintenanceRecovery = await require('./ha-maintenance').prepare({ cfg, shutdown })
+      } catch {
+        // Ownership uncertainty must not turn a controlled UPS shutdown into an
+        // abrupt guest power loss. Continue draining guests, without claiming HA.
+        maintenanceRecovery = { node: cfg.pveConfig.node, phase: 'unknown',
+          shutdownId: shutdown?.shutdownId, deviceId: shutdown?.deviceId }
+      }
+      step('enabling HA maintenance', 1, 1, { maintenanceRecovery })
       await proxmox.stopAllGuests(cfg.pveConfig, ({ done, total }) => {
         step('stopping guests', done, total)
       })
