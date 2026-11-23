@@ -35,10 +35,24 @@ skipping directly to host power-off.
 
 All maintenance, policy, guest and power commands in tests use simulated drivers;
 no live Proxmox mutation, controller deployment, release tag, or installer publication
-was required. Existing legacy PVE3/PVE5 flags remain subject to ownership review.
+was required. At that verification stage, legacy PVE3/PVE5 flags still required ownership review.
 
 Private receipts/logs are under `/tmp/flux-ha-recovery-20261123/` on the workstation.
 See `docs/ops/2026-11-23-ha-maintenance-recovery.md` for rollout order and diagnostics.
 
 Published source revision: `ab97b2f7dd43c7aa33ecfe1edafa9fe8e56bf889`; GitHub main matched local HEAD after push.
-No live controller or agent deployment was performed.
+At source publication, no live controller or agent deployment had been performed.
+
+## Subsequent deployment verification — 2026-11-23
+
+After source verification, the owner authorized production activation. The target
+controller was deployed first, followed by five Proxmox agents at version 1.1.0.
+All five registered online with the recovery capability. The served installer
+bundle was also updated to 1.1.0. Existing configuration and agent assignments were
+preserved. Additive migration passed on a consistent database copy before restart;
+post-deployment database integrity and controller health checks passed.
+
+Legacy maintenance clearance was separately authorized and verified through Flux.
+All five nodes were online/quorate, maintenance flags were clear, and guest placement
+was unchanged. No real power-outage/recovery drill was performed. These results
+supersede the source-publication-only deployment status above.

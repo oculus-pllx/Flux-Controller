@@ -111,3 +111,11 @@ source fix alone does not clear the observed SMS PVE3/PVE5 flags.
 No guest reboot, migration, maintenance clear or controller deployment is required
 for repository verification. Regression tests use disposable state/databases,
 WebSockets and simulated Proxmox operations rather than issuing live power commands.
+
+## Deployment status — 2026-11-23
+
+An owner-authorized rollout subsequently installed the controller fix, upgraded
+five Proxmox agents to 1.1.0, and refreshed the installer bundle. Health, agent
+registration, database integrity, quorum, maintenance clearance and unchanged
+guest placement were verified. Production-specific receipts and rollback details
+are retained in private operations records. A real outage drill remains untested.

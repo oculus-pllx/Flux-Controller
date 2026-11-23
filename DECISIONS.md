@@ -24,3 +24,13 @@ maintenance and manual policy changes. Retain and expose ambiguous work for revi
 do not retroactively claim ownership of legacy flags. Repository publication does
 not authorize a PRISM deployment or manufacture an installer release. See
 `docs/ops/2026-11-23-ha-maintenance-recovery.md` for upgrade order and diagnostics.
+
+## 2026-11-23 — Authorized controller-first production rollout
+
+The owner subsequently authorized deploying the recovery fix and separately
+clearing legacy maintenance through Flux. Deploy the controller before agents,
+preserve runtime identities/configuration and take consistent database/source
+backups. Do not infer ownership for historical outages or induce a live outage
+as a deployment check. The verified rollout installed five agents at 1.1.0 and
+updated the installer bundle; source publication and live activation are separate
+events. See the dated verification record and operations guide.
